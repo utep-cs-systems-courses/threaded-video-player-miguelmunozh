@@ -1,107 +1,140 @@
-#!/usr/bin/env python3
+#! /usr/bin/python3
+from threading import Thread, Semaphore, Lock
+import cv2, time
 
+class producerConsumerQueue():
+    def __init__(self):
+        # initializes a queue
+        self.queue = []
+        # two semaphores and a mutex to use per each queue
+        self.full = Semaphore(0)
+        self.empty = Semaphore(10) # capacity of ten permits to only add a maximum of ten frames to the queue
+        self.mutex = Lock()
+        
+    def put(self, frame):
+        # acquiere empty sempahore which would be realesed by another thread when consuming from the queue
+        # 
+        self.empty.acquire()
+        self.mutex.acquire()
+        self.queue.append(frame)
+        self.mutex.release()
+        self.full.release()
+        return
+    
+    def get(self):
+        self.full.acquire()
+        self.mutex.acquire()
+        frame = self.queue.pop(0)
+        self.mutex.release()
+        self.empty.release()
+        return frame
+    
+    
+# create two queues for the frames
+frameQueue = producerConsumerQueue()
+grayScaleQueue = producerConsumerQueue()
 
-import cv2, os, sys, time
-from threading import Thread, Semaphore
-
-
-frameQueue = []
-grayScaleQueue = []
-# semaphores for consumer producer behaviour
-# it blocks, waiting until some other thread calls release()
-extract = Semaphore()
-convert = Semaphore()
-display = Semaphore()
-#bound the limit of the queue
-queueLimit = 10
 
 class ExtractFrames(Thread):
-    def __init__(self):
+    def __init__(self):  
         Thread.__init__(self)
-        # set variables used by this thread
-        self.video = cv2.VideoCapture('clip.mp4')
-        self.maxFrames = int(self.video.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.videoCapture = cv2.VideoCapture('clip.mp4')
+        # get total frames of the video
+        self.totalFrames = int(self.videoCapture.get(cv2.CAP_PROP_FRAME_COUNT))
         self.count = 0
-
+        
     def run(self):
-        success, image = self.video.read()
+        # gets the first frame and a boolean value if frame extraccion is successful
+        success, image = self.videoCapture.read()
 
-        while success and self.count <= 72:
-            # check for queue limit so that we dont have more than 10 elements in the queue
-            if len(frameQueue) <= queueLimit:
-                # get extract permit 
-                extract.acquire()
-                frameQueue.append(image)
-
-                success, image = self.video.read()
+        while True:
+            # if frame extraccion is successful, and continues to extract the next frame
+            if success: 
+                # get the frame
+                frameQueue.put(image)
+                # get next frame from file if the extraccion is successful
+                success, image = self.videoCapture.read() 
                 print(f'Reading frame {self.count}')
                 self.count += 1
-                # realese convert permit, so that convert thread can use the permit to convert a frame
-                convert.release()
 
+            # once we reach the total frame count, we add -1 to signal the threads that there are no more frames
+            if self.count == self.totalFrames:
+                frameQueue.put(-1)
+                break  
+            
+        # signal that this thread has ended his work    
         print('Frame extraction complete')
-
+        return
+            
 class ConvertToGrayScale(Thread):
-    def __init__(self):
-        Thread.__init__(self)
-        self.count = 0
+        def __init__(self):
+            Thread.__init__(self)
+            self.count = 0
+            
+        def run(self):
+           
+            while True:
+                # get a frame from the first queue
+                frame = frameQueue.get()
 
-    def run(self):
-        while self.count <= 72:
-            if frameQueue and len(grayScaleQueue) <= queueLimit:
+                # if we see the signal that there are no more frames, we exit the loop
+                if type(frame) == int and frame == -1:
+                    grayScaleQueue.put(-1)
+                    break
                 
-                # aquire convert permit
-                convert.acquire()
-                # get frame to convert from the queue
-                frame = frameQueue.pop(0)
-
-                print(f'Converting frame {self.count}')
-                grayFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                grayScaleQueue.append(grayFrame)
+                # converts normal frame to grayscale and add it to the second queue
+                grayscaleFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                grayScaleQueue.put(grayscaleFrame)
+                
+                print(f'Converting Frame {self.count}')
                 self.count += 1
-                
-                # realese display permit to be used by display thread
-                display.release()
+            
+            # signal that this thread has ended his work    
+            print('Frame convertion complete')
+            return
 
-        print('Finished converting to gray scale')          
-
-class DisplayFrames(Thread):
+class ShowMovie(Thread):
     def __init__(self):
         Thread.__init__(self)
-        # 42 ms display
+        # delay of 42 ms
         self.delay = 42
         self.count = 0
 
     def run(self):
-        while self.count <= 72:
-            # if queue is not empty
-            if grayScaleQueue:
-                # acquiere display permit display doesnt happen until is realeased by another thread
-                display.acquire()
-                # get black and gray frame
-                frame = grayScaleQueue.pop(0)
 
-                print(f'Displaying Frame {self.count}')
-                # show the frame
-                cv2.imshow('Video', frame)
-                self.count += 1
-                # realease extract semaphore to be available by another thread
-                extract.release()
+        while True:
+            # get a grayscale frame
+            frame = grayScaleQueue.get()
 
-                if cv2.waitKey(self.delay) and 0xFF == ord('q'):
-                    break
-        
-        print('Finished displaying all frames')
+            # if we see the signal that there are no more frames, we break the loop
+            if type(frame) == int and frame == -1:
+                break
+
+            # display grayscale frame
+            cv2.imshow('Video', frame)
+            
+            print(f'Displaying Frame {self.count}')
+            self.count += 1
+
+            # wait 42ms before displaying the next frame
+            if cv2.waitKey(self.delay) and 0xFF == ord('q'):
+                break
+                    
+        #destory video screen
         cv2.destroyAllWindows()
+        
+        # signal that this thread has ended his work    
+        print('Frame display complete')
+        return
 
 
-# start threads to run concurrently
+# create and start all 3 threads
 
 extractFrames = ExtractFrames()
 extractFrames.start()
 
-convertToGrayScale = ConvertToGrayScale()
-convertToGrayScale.start()
+convertFrames = ConvertToGrayScale()
+convertFrames.start()
 
-displayFrames = DisplayFrames()
+displayFrames = ShowMovie()
 displayFrames.start()
