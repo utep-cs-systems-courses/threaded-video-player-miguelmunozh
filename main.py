@@ -7,26 +7,26 @@ class producerConsumerQueue():
         # initializes a queue
         self.queue = []
         # two semaphores and a mutex to use per each queue
-        self.full = Semaphore(0)
-        self.empty = Semaphore(10) # capacity of ten permits to only add a maximum of ten frames to the queue
+        self.first = Semaphore(10) # capacity of ten permits to only add a maximum of ten frames to the queue
+        self.second = Semaphore(0) # waits until other thread calls release() to make it larger than zero.
         self.mutex = Lock()
         
     def put(self, frame):
-        # acquiere empty sempahore which would be realesed by another thread when consuming from the queue
-        # 
-        self.empty.acquire()
+        # acquiere first sempahore which would be realesed by another thread when consuming from the queue
+        self.first.acquire()
         self.mutex.acquire()
         self.queue.append(frame)
         self.mutex.release()
-        self.full.release()
+        self.second.release() # if 10 permits have been acquiere it ill wait until consumers realese a permit
         return
     
     def get(self):
-        self.full.acquire()
+        # acquiere second Semaphore which would be realesed by another thread when produccing to the queue
+        self.second.acquire()
         self.mutex.acquire()
         frame = self.queue.pop(0)
         self.mutex.release()
-        self.empty.release()
+        self.first.release() # realese 1 permit, that we use to add a frame to the first queue
         return frame
     
     
@@ -93,7 +93,7 @@ class ConvertToGrayScale(Thread):
             print('Frame convertion complete')
             return
 
-class ShowMovie(Thread):
+class DisplayVideo(Thread):
     def __init__(self):
         Thread.__init__(self)
         # delay of 42 ms
@@ -136,5 +136,5 @@ extractFrames.start()
 convertFrames = ConvertToGrayScale()
 convertFrames.start()
 
-displayFrames = ShowMovie()
+displayFrames = DisplayVideo()
 displayFrames.start()
